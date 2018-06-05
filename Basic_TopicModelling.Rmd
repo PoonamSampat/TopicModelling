@@ -1,0 +1,502 @@
+I have read the the 10-K reports of 30 companies from 2005 -2014 and help build an intution about top few
+areas these companies where heading towards then and cross-validate that with data available now.
+
+## Workflow
+
+Code flow is as follows:
+1. Read the 10K reports for tech firms between 2005 & 2014.
+2. Clean the text, remove stop words, stemming.
+3. Lemmatize tokens use of chuncks for nouns.
+3. Create a DTM.
+4. Create DTMS for each year.
+5. Visualize the same as word clouds for each year.
+6. Explain our findings. 
+
+Step 1. Set and install all the libraries required.
+
+
+```{r setup}
+ if (!require(tm)) {install.packages("tm")}
+ if (!require(wordcloud)) {install.packages("wordcloud")}
+ if (!require(igraph)) {install.packages("igraph")}
+ if (!require(ggraph)) {install.packages("ggraph")}
+ if (!require(SnowballC)) {install.packages("SnowballC")}
+ if (!require(tibble)) {install.packages("tibble")}
+ if(!require(reticulate)) {install.packages("reticulate")}
+
+
+ library(reticulate)  
+ library(SnowballC)
+ library(tm) 
+ library(tidyverse)
+ library(tidytext)
+ library(wordcloud)
+ library(igraph)
+ library(ggraph)
+ library(tibble)
+
+```
+# Basic DTM creation using tidy.
+```{r}
+createDTM <-function(text){
+
+
+file1.clean =  text.clean(text, remove_numbers=TRUE)
+textdf = data_frame(text = file1.clean)
+
+# Tokenizing ops. Words first.
+textdf  %>% unnest_tokens(word, text)
+
+tidy_2005 = textdf %>%   
+                    mutate(doc = row_number()) %>%
+                    unnest_tokens(word, text) %>% 
+                    anti_join(stop_words) %>%
+                    group_by(doc) %>%
+                    count(word, sort=TRUE)
+
+
+dtm_2005 = tidy_2005 %>%
+            cast_dtm(doc, word, n)
+
+dtm_2005 <- tidy_2005 %>% cast_sparse(doc, word, n)
+
+return(dtm_2005)
+}
+```
+
+##Helper Method, Cleans the text , removes punctuation, stop words, white space, performs Stemming and lemmatization of nouns.
+```{r text.clean}
+ text.clean = function(x,                    # x=text_corpus
+		remove_numbers=TRUE, 	    # whether to drop numbers? Default is TRUE	
+		remove_stopwords=TRUE,
+		remove_Punctuation=TRUE,
+		stemming = TRUE,
+		lemmatization = TRUE
+		)	    # remove punctuation Default is TRUE
+   
+ { 
+  library(tm)
+  x  =  gsub("<.*?>", " ", x)               # regex for removing HTML tags
+  x  =  iconv(x, "latin1", "ASCII", sub="") # Keep only ASCII characters
+  x  =  gsub("[^[:alnum:]]", " ", x)        # keep only alpha numeric 
+  x  =  tolower(x)                          # convert to lower case characters
+
+  if (remove_numbers) { x  =  removeNumbers(x)}    # removing numbers
+
+  x  =  stripWhitespace(x)                  # removing white space
+  x  =  gsub("^\\s+|\\s+$", "", x)          # remove leading and trailing white space. Note regex usage
+  
+  if (remove_Punctuation)
+   
+  x= gsub("[[:punct:][:blank:]]+", " ", x) # remove punctuations
+  
+  
+
+  # evlauate condn
+   if (remove_stopwords){
+
+   # read std stopwords list from my git
+   stpw1 = readLines('https://raw.githubusercontent.com/sudhir-voleti/basic-text-analysis-shinyapp/master/data/stopwords.txt'                     )
+ 
+   # tm package stop word list; tokenizer package has the same name function, hence 'tm::'
+   stpw2 = tm::stopwords('english')      
+   comn  = unique(c(stpw1, stpw2))         # Union of the two lists
+   stopwords = unique(gsub("'"," ",comn))  # final stop word list after removing punctuation
+
+   # removing stopwords created above
+   x  =  removeWords(x,stopwords)        	}  # if condn ends
+
+  x  =  stripWhitespace(x)                  # removing white space
+  
+  
+  if (stemming)
+  {
+  library(SnowballC)
+ 
+  x<-x %>%
+     wordStem(language="english")
+  }
+  
+  if (lemmatization){
+  nltk.stem <- import("nltk.stem")
+  wordnet_lemm = nltk.stem$WordNetLemmatizer()
+  
+  a0 = as.character(x)[1:100] 
+  a2 = sapply(a0, wordnet_lemm$lemmatize)    # argument pos='v' 4 verb conversions disabled. need 2 loop?
+ 
+  
+  # looping to get lemmas for noun phrases
+  a3 = vector("list", length = length(a0))
+  # system.time({
+    for (i1 in 1:length(a3)){
+      a3[[i1]] = wordnet_lemm$lemmatize(a0[i1], pos='n')
+    }
+  # })    
+  
+  x = sapply(a3, `[[`, 1)     # extract all list elements
+  }
+                            
+  return(x) }  # func ends
+   
+   
+
+```
+
+## Helper method to build world cloud.
+
+```{r}
+
+build_perYearCloud<-function(year, df)
+{
+  set.seed(123)
+  library(dplyr)
+  library(wordcloud)
+  
+  title = paste ( "Word Cloud " , year)
+  
+  wordcloud(df$new.words, df$freq,     # words, their freqs 
+            scale = c(3.5, 0.5), 
+            max.words = 150, # max #words
+            min.freq=2,# range of word sizes
+            colors = brewer.pal(8, "Dark2"))    # Plot results in a word cloud 
+  title(sub = title) 
+}
+
+```
+
+##Main method for each year.
+Flow:
+Creates the DTM, 
+Saves the DTM as an RDS for each year.
+Create a dataframe with words unique to each year.
+Visualize each year and finally cross verify if the analysis adds up.
+
+
+
+```{r inputfiles}
+ ## reading RDS files
+
+#Sourcing the data from Git.
+inputfilePath = "https://github.com/PoonamSampat/SampleDataSet/raw/master/10-K/"
+
+RDSfilePath = getwd()
+
+textname = "bd.df.30firms."
+
+#YEAR 2005
+year = 2005 
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+
+#df2005RDS = readRDS(paste0(filepath,year,'.Rds'))
+df2005RDS = readRDS(gzcon(url(githubURL)))
+  text= df2005RDS$bd.text
+  dtm = createDTM(text)
+  df2005afterdtm <- tidy(dtm)
+  
+#Save DTM as RDS  
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds'))
+
+df2005 = as.matrix(readRDS(paste0(RDSfilePath,year,'.Rds')))
+# 2005 Matrix
+d2005 = df2005[,colSums(df2005)>0]
+
+
+# Data Frame to hold unique words per year.
+df <- data.frame(freq=numeric(),new.words=character(),year=numeric(),stringsAsFactors = F)
+
+ 
+
+ # ---------------------- Year 2006
+year = 2006
+
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+#df2006RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+df2006RDS = readRDS(gzcon(url(githubURL)))
+  text= df2006RDS$bd.text
+  dtm = createDTM(text)
+  df2006afterdtm <- tidy(dtm)
+  saveRDS(dtm,paste0(RDSfilePath,year,'.Rds'))
+
+          
+df2006 = as.matrix(readRDS(paste0(RDSfilePath,year,'.Rds')))
+
+#Get words from year 2006
+d2006 = df2006[,colSums(df2006)>0]
+
+# Remove 2006 0's
+d22 = df2006[,colSums(df2006)>0]
+
+#Get differnce with previous year
+add.words=(setdiff(colnames(d22),colnames(d2005)))
+
+df2006afterdtm<-df2006afterdtm[df2006afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2006afterdtm$value ,new.words=df2006afterdtm$column,year=year,stringsAsFactors = F)
+
+
+df<- rbind(df, dfperyear)
+# ----------------------
+
+
+ # ---------------------- Year 2007
+year = 2007
+#df2007RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+
+df2007RDS = readRDS(gzcon(url(githubURL)))
+  text= df2007RDS$bd.text
+  dtm = createDTM(text)
+  df2007afterdtm <- tidy(dtm)
+  
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds'))  
+  
+df2007 = as.matrix((readRDS(paste0(RDSfilePath,year,'.Rds'))))
+  
+d2007 = df2007[,colSums(df2007)>0]
+
+
+d23 = df2007[,colSums(df2007)>0]
+add.words=(setdiff(colnames(d23),colnames(d2006)))
+
+df2007afterdtm<-df2007afterdtm[df2007afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2006afterdtm$value ,new.words=df2006afterdtm$column,year=year,stringsAsFactors = F)
+df<- rbind(df, dfperyear)
+# ----------------------
+
+
+
+ # ---------------------- Year 2008
+year = 2008
+#df2008RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+df2008RDS = readRDS(gzcon(url(githubURL)))
+  text= df2008RDS$bd.text
+  dtm = createDTM(text)
+  df2008afterdtm <- tidy(dtm)
+
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds'))  
+  
+df2008 = as.matrix((readRDS(paste0(RDSfilePath,year,'.Rds'))))
+  
+d2008 = df2008[,colSums(df2008)>0]
+
+
+d24 = df2008[,colSums(df2008)>0]
+add.words=(setdiff(colnames(d24),colnames(d2007)))
+
+df2008afterdtm<-df2008afterdtm[df2008afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2008afterdtm$value ,new.words=df2008afterdtm$column,year=year,stringsAsFactors = F)
+df<- rbind(df, dfperyear)
+# ----------------------
+
+
+
+ # ---------------------- Year 2009
+year = 2009
+#df2009RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+df2009RDS = readRDS(gzcon(url(githubURL)))
+
+  text= df2009RDS$bd.text
+  dtm = createDTM(text)
+  df2009afterdtm <- tidy(dtm)
+  
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds'))  
+  
+df2009 = as.matrix((readRDS(paste0(RDSfilePath,year,'.Rds'))))
+  
+d2009 = df2009[,colSums(df2009)>0]
+
+
+d25 = df2009[,colSums(df2009)>0]
+
+add.words=(setdiff(colnames(d25),colnames(d2008)))
+
+df2009afterdtm<-df2009afterdtm[df2009afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2009afterdtm$value ,new.words=df2009afterdtm$column,year=year,stringsAsFactors = F)
+df<- rbind(df, dfperyear)
+#----------------------
+
+
+ #---------------------- Year 2010
+year = 2010
+#df2010RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+df2010RDS = readRDS(gzcon(url(githubURL)))
+
+  text= df2010RDS$bd.text
+  dtm = createDTM(text)
+  df2010afterdtm <- tidy(dtm)
+  
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds')) 
+  
+df2010 = as.matrix((readRDS(paste0(RDSfilePath,year,'.Rds'))))
+  
+d2010 = df2010[,colSums(df2010)>0]
+
+
+d26 = df2010[,colSums(df2010)>0]
+add.words=(setdiff(colnames(d26),colnames(d2009)))
+
+df2010afterdtm<-df2010afterdtm[df2010afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2010afterdtm$value ,new.words=df2010afterdtm$column,year=year,stringsAsFactors = F)
+df<- rbind(df, dfperyear)
+# ----------------------
+
+
+ # ---------------------- Year 2011
+year = 2011
+#df2011RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+df2011RDS = readRDS(gzcon(url(githubURL)))
+
+  text= df2011RDS$bd.text
+  dtm = createDTM(text)
+  df2011afterdtm <- tidy(dtm)
+  
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds')) 
+  
+df2011 = as.matrix((readRDS(paste0(RDSfilePath,year,'.Rds'))))
+  
+d2011 = df2011[,colSums(df2011)>0]
+
+
+d27 = df2011[,colSums(df2011)>0]
+add.words=(setdiff(colnames(d27),colnames(d2010)))
+
+df2011afterdtm<-df2011afterdtm[df2011afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2011afterdtm$value ,new.words=df2011afterdtm$column,year=year,stringsAsFactors = F)
+df<- rbind(df, dfperyear)
+# ----------------------
+
+
+ #---------------------- Year 2012
+year = 2012
+#df2012RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+df2012RDS = readRDS(gzcon(url(githubURL)))
+
+  text= df2012RDS$bd.text
+  dtm = createDTM(text)
+  df2012afterdtm <- tidy(dtm)
+  
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds')) 
+  
+df2012 = as.matrix((readRDS(paste0(RDSfilePath,year,'.Rds'))))
+  
+d2012 = df2012[,colSums(df2012)>0]
+
+
+d28 = df2012[,colSums(df2012)>0]
+add.words=(setdiff(colnames(d28),colnames(d2011)))
+
+df2012afterdtm<-df2012afterdtm[df2012afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2012afterdtm$value ,new.words=df2012afterdtm$column,year=year,stringsAsFactors = F)
+df<- rbind(df, dfperyear)
+# ----------------------
+
+
+# ---------------------- Year 2013
+year = 2013
+#df2013RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+df2013RDS = readRDS(gzcon(url(githubURL)))
+
+  text= df2013RDS$bd.text
+  dtm = createDTM(text)
+  df2013afterdtm <- tidy(dtm)
+  
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds')) 
+  
+df2013 = as.matrix((readRDS(paste0(RDSfilePath,year,'.Rds'))))
+  
+d2013 = df2013[,colSums(df2013)>0]
+
+
+d29 = df2013[,colSums(df2013)>0]
+add.words=(setdiff(colnames(d29),colnames(d2012)))
+
+df2013afterdtm<-df2013afterdtm[df2013afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2013afterdtm$value ,new.words=df2013afterdtm$column,year=year,stringsAsFactors = F)
+df<- rbind(df, dfperyear)
+# ----------------------
+
+
+#---------------------- Year 2014
+year = 2014
+#df2014RDS = readRDS(paste0(inputfilePath,year,'.Rds'))
+
+githubURL <- paste0(inputfilePath,paste0(textname,year,'.Rds'))
+df2014RDS = readRDS(gzcon(url(githubURL)))
+
+  text= df2014RDS$bd.text
+  dtm = createDTM(text)
+  df2014afterdtm <- tidy(dtm)
+  
+saveRDS(dtm,paste0(RDSfilePath,year,'.Rds')) 
+  
+df2014 = as.matrix((readRDS(paste0(RDSfilePath,year,'.Rds'))))
+  
+d2014 = df2014[,colSums(df2014)>0]
+
+
+d30 = df2014[,colSums(df2014)>0]
+add.words=(setdiff(colnames(d30),colnames(d2013)))
+
+df2014afterdtm<-df2014afterdtm[df2014afterdtm$column %in% add.words,]
+
+dfperyear=data.frame(freq=df2014afterdtm$value ,new.words=df2014afterdtm$column,year=year,stringsAsFactors = F)
+df<- rbind(df, dfperyear)
+# This Works----------------------
+
+
+
+build_perYearCloud("2006",subset(df,year==2006))
+build_perYearCloud("2007",subset(df,year==2007))
+build_perYearCloud("2008",subset(df,year==2008))
+build_perYearCloud("2009",subset(df,year==2009))
+build_perYearCloud("2010",subset(df,year==2010))
+build_perYearCloud("2011",subset(df,year==2011))
+build_perYearCloud("2012",subset(df,year==2012))
+build_perYearCloud("2013",subset(df,year==2013))
+build_perYearCloud("2014",subset(df,year==2014))
+
+
+
+
+
+
+
+
+
+  
+
+```
+
+
+Key Takeaways Year wise:
+
+#2006 higlights the year of Macbook, youtube , rsa, Zune.
+#2007 Motorazr,Goto webinar cisco's online tool sees a mention.
+#2009 the tech players are talking cloud with Azure,Omniture an online marketing and business analytics unit was acquired by Adobe in this year, smartbooks gets a worthy mention,MotoBLur -Motorolo's user system on remote servers gets a mention.
+#2010 ipad  & iOS has taken center stage,emerging technology nfc , also we see ddos attacks highligted
+#2011 Cloud is the center stage with iCloud, heroku
+#2012 talks about Cloud Platforms, byod, "Kaggle :)" ,cloud evangelism!
+#2013 see the advent of wearables with chromecast getting lots of mentions
+#2014 Big data platforms being talked about - Cloudera!!, geospatial, bluemix -ibm`s cloud platform, intresting capture here autonomic and Mojang which was acquired by Microsoft in 2014.
+
+
+
